@@ -26,3 +26,7 @@
 		log.Fatalln(err)
 	}
 ```
+
+# Related issue/repo
+https://github.com/golang/go/issues/25899
+https://github.com/golang/crypto
