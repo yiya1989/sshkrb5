@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pkg/errors"
+
 	"gopkg.in/jcmturner/gokrb5.v7/client"
 	"gopkg.in/jcmturner/gokrb5.v7/config"
+	"gopkg.in/jcmturner/gokrb5.v7/credentials"
 	"gopkg.in/jcmturner/gokrb5.v7/crypto"
 	"gopkg.in/jcmturner/gokrb5.v7/gssapi"
 	"gopkg.in/jcmturner/gokrb5.v7/iana/chksumtype"
@@ -30,39 +33,59 @@ const (
 	InitiatorReady
 )
 
-func NewKrb5InitiatorClient(krb5Conf, user, realm string, keytabConf []byte) (kcl Krb5InitiatorClient, err error) {
-	c, _ := config.NewConfigFromString(krb5Conf)
-
-	// Set to lookup KDCs in DNS
-	c.LibDefaults.DNSLookupKDC = true
-
-	// Blank out the KDCs to ensure they are not being used
-	c.Realms = []config.Realm{}
-
-	// Init keytab from conf
-	kt := &keytab.Keytab{}
-	if err = kt.Unmarshal([]byte(keytabConf)); err != nil {
-		return kcl, fmt.Errorf("unmarshal keytabConf failed: %w", err)
-	}
-
+func NewKrb5InitiatorClientWithKrb5ClientCb(newClientFunc func() (*client.Client, error)) (Krb5InitiatorClient, error) {
 	// Init krb5 client and login
-	cl := client.NewClientWithKeytab(user, realm, kt, c)
+	cl, err := newClientFunc()
+	if err != nil {
+		return Krb5InitiatorClient{}, errors.Wrap(err, "creating krb5 client from credentials cache")
+	}
 
 	err = cl.Login()
 	if err != nil {
-		fmt.Printf("error on logging in using DNS lookup of KDCs: %v\n", err)
-		return
+		return Krb5InitiatorClient{}, errors.Wrap(err, "fail to login")
 	}
 	err = cl.AffirmLogin()
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Krb5InitiatorClient{}, errors.Wrap(err, "fail to affirm login")
 	}
 
 	return Krb5InitiatorClient{
 		client: cl,
 		state:  InitiatorStart,
 	}, nil
+}
+
+func NewKrb5InitiatorClientWithCCache(krb5Conf, ccachePath string) (Krb5InitiatorClient, error) {
+	c, err := config.NewConfigFromString(krb5Conf)
+	if err != nil {
+		return Krb5InitiatorClient{}, errors.Wrap(err, "parsing krb5 config")
+	}
+
+	ccache, err := credentials.LoadCCache(ccachePath)
+	if err != nil {
+		return Krb5InitiatorClient{}, errors.Wrapf(err, "loading krb5 credentials cache %s", ccachePath)
+	}
+
+	return NewKrb5InitiatorClientWithKrb5ClientCb(func() (*client.Client, error) {
+		return client.NewClientFromCCache(ccache, c)
+	})
+}
+
+func NewKrb5InitiatorClientWithKeytab(krb5Conf, user, realm string, keytabConf []byte) (Krb5InitiatorClient, error) {
+	c, err := config.NewConfigFromString(krb5Conf)
+	if err != nil {
+		return Krb5InitiatorClient{}, errors.Wrap(err, "parsing krb5 config")
+	}
+
+	// Init keytab from conf
+	kt := &keytab.Keytab{}
+	if err = kt.Unmarshal([]byte(keytabConf)); err != nil {
+		return Krb5InitiatorClient{}, errors.Wrap(err, "unmarshal keytabConf failed")
+	}
+
+	return NewKrb5InitiatorClientWithKrb5ClientCb(func() (*client.Client, error) {
+		return client.NewClientWithKeytab(user, realm, kt, c), nil
+	})
 }
 
 type Krb5InitiatorClient struct {
